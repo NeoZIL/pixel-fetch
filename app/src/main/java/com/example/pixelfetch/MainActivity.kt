@@ -16,7 +16,10 @@ data class BuildInfo(
     val android: String, val id: String, val incremental: String,
     val securityPatch: String, val fingerprint: String,
     val releaseDate: String = "Unknown", val expiryDate: String = "Unknown"
-)
+) {
+    fun buildDateLabel(): String =
+        if (releaseDate != "Unknown") releaseDate else "Date unavailable"
+}
 
 class MainActivity : Activity() {
     private val pool = Executors.newSingleThreadExecutor()

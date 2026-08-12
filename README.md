@@ -37,3 +37,7 @@ A release workflow is included at `.github/workflows/build.yml`.
 ## License
 
 Apache-2.0.
+
+
+## GitHub build
+The included GitHub Actions workflow builds a **release variant** only. The initial artifact is unsigned; signing can be added later using GitHub Secrets without putting a `.jks` file in the repository.
