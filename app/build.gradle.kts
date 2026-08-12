@@ -12,10 +12,6 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    kotlinOptions {
-        jvmTarget = "1.8"
-    }
-
     defaultConfig {
         applicationId = "com.example.pixelfetch"
         minSdk = 26
@@ -25,7 +21,6 @@ android {
     }
 }
 
-
-tasks.withType<JavaCompile>().configureEach {
-    options.release.set(8)
+kotlin {
+    jvmToolchain(17)
 }
