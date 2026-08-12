@@ -2,9 +2,3 @@
 *.keystore
 *.b64
 *.base64
-.gradle/
-build/
-**/build/
-local.properties
-.idea/
-*.iml
