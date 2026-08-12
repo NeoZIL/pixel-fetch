@@ -1,5 +1,7 @@
 *.jks
 *.keystore
+*.b64
+*.base64
 .gradle/
 build/
 **/build/
