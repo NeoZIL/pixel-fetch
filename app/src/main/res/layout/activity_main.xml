@@ -1,24 +1,29 @@
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent" android:layout_height="match_parent"
-    android:orientation="vertical" android:padding="20dp">
+    android:orientation="vertical" android:padding="16dp">
+
     <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
-        android:text="Pixel Fetch" android:textSize="25sp" android:textStyle="bold"/>
-    <TextView android:id="@+id/status" android:layout_width="match_parent" android:layout_height="wrap_content"
-        android:text="No root required • ready" android:paddingTop="10dp"/>
+        android:text="PixelFetch" android:textSize="24sp" android:textStyle="bold"/>
+    <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:text="Public Pixel build metadata • no root" android:paddingTop="4dp"/>
+
+    <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:text="CHANNEL" android:textStyle="bold" android:paddingTop="14dp"/>
+    <Spinner android:id="@+id/channel" android:layout_width="match_parent" android:layout_height="wrap_content"/>
+
+    <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:text="DEVICE" android:textStyle="bold" android:paddingTop="10dp"/>
+    <Spinner android:id="@+id/device" android:layout_width="match_parent" android:layout_height="wrap_content"/>
+
     <Button android:id="@+id/fetch" android:layout_width="match_parent" android:layout_height="wrap_content"
-        android:text="FETCH LATEST PIXEL CANARY"/>
-    <LinearLayout android:id="@+id/buildCard" android:layout_width="match_parent" android:layout_height="wrap_content"
-        android:orientation="vertical" android:padding="14dp" android:layout_marginTop="10dp"
-        android:background="#EEEEEE">
-        <TextView android:id="@+id/cardTitle" android:layout_width="match_parent" android:layout_height="wrap_content"
-            android:text="Latest Pixel Build" android:textSize="18sp" android:textStyle="bold"/>
-        <TextView android:id="@+id/cardDate" android:layout_width="match_parent" android:layout_height="wrap_content"
-            android:text="Build Date: —" android:textSize="14sp" android:paddingTop="4dp"/>
-    </LinearLayout>
-    <Button android:id="@+id/save" android:layout_width="match_parent" android:layout_height="wrap_content"
-        android:text="SAVE RESULT" android:enabled="false"/>
-    <ScrollView android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1">
-        <TextView android:id="@+id/output" android:layout_width="match_parent" android:layout_height="wrap_content"
-            android:textIsSelectable="true" android:fontFamily="monospace" android:paddingTop="14dp"/>
+        android:text="FETCH BUILDS"/>
+
+    <TextView android:id="@+id/status" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:text="Ready" android:paddingTop="8dp"/>
+
+    <ScrollView android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1"
+        android:paddingTop="8dp">
+        <LinearLayout android:id="@+id/results" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical"/>
     </ScrollView>
 </LinearLayout>

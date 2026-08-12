@@ -1,239 +1,401 @@
 package com.example.pixelfetch
 
 import android.app.Activity
+import android.content.ContentValues
 import android.os.Bundle
+import android.provider.MediaStore
+import android.view.ViewGroup
 import android.widget.*
-import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
+import java.net.URLEncoder
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
-import java.util.regex.Pattern
 import java.util.concurrent.Executors
 
-data class BuildInfo(
-    val model: String, val product: String, val device: String,
-    val android: String, val id: String, val incremental: String,
-    val securityPatch: String, val fingerprint: String,
-    val releaseDate: String = "Unknown", val expiryDate: String = "Unknown"
-) {
-    fun buildDateLabel(): String =
-        if (releaseDate != "Unknown") releaseDate else "Date unavailable"
+data class DeviceChoice(val model: String, val product: String, val device: String) {
+    override fun toString(): String = "$model — $device"
 }
+
+data class BuildChoice(
+    val model: String,
+    val product: String,
+    val device: String,
+    val id: String,
+    val incremental: String,
+    val android: String,
+    val release: String,
+    val securityPatch: String,
+    val buildDate: String,
+    val fingerprint: String
+)
 
 class MainActivity : Activity() {
     private val pool = Executors.newSingleThreadExecutor()
-    private var resultText = ""
+    private lateinit var channelSpinner: Spinner
+    private lateinit var deviceSpinner: Spinner
+    private lateinit var fetchButton: Button
+    private lateinit var status: TextView
+    private lateinit var results: LinearLayout
+    private var devices: List<DeviceChoice> = emptyList()
 
     override fun onCreate(state: Bundle?) {
         super.onCreate(state)
         setContentView(R.layout.activity_main)
 
-        val status = findViewById<TextView>(R.id.status)
-        val output = findViewById<TextView>(R.id.output)
-        val fetch = findViewById<Button>(R.id.fetch)
-        val save = findViewById<Button>(R.id.save)
-        val cardTitle = findViewById<TextView>(R.id.cardTitle)
-        val cardDate = findViewById<TextView>(R.id.cardDate)
+        channelSpinner = findViewById(R.id.channel)
+        deviceSpinner = findViewById(R.id.device)
+        fetchButton = findViewById(R.id.fetch)
+        status = findViewById(R.id.status)
+        results = findViewById(R.id.results)
 
-        fetch.setOnClickListener {
-            fetch.isEnabled = false
-            save.isEnabled = false
-            status.text = "Fetching Android Developers…"
-            output.text = ""
+        channelSpinner.adapter = ArrayAdapter(
+            this,
+            android.R.layout.simple_spinner_dropdown_item,
+            listOf("Canary", "Stable")
+        )
 
-            pool.execute {
-                try {
-                    val info = fetchLatest()
-                    resultText = render(info)
-                    runOnUiThread {
-                        output.text = resultText
-                        cardTitle.text = "${info.model} • ${info.buildDateLabel()}"
-                        cardDate.text = "Build Date: ${info.releaseDate}"
-                        status.text = "Fetched successfully • no root used"
-                        fetch.isEnabled = true
-                        save.isEnabled = true
-                    }
-                } catch (e: Exception) {
-                    runOnUiThread {
-                        status.text = "Fetch failed"
-                        output.text = e.message ?: e.toString()
-                        fetch.isEnabled = true
-                    }
+        channelSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onNothingSelected(parent: AdapterView<*>?) {}
+            override fun onItemSelected(
+                parent: AdapterView<*>?, view: android.view.View?, position: Int, id: Long
+            ) {
+                loadDevices()
+            }
+        }
+
+        fetchButton.setOnClickListener { fetchSelectedBuild() }
+        loadDevices()
+    }
+
+    private fun loadDevices() {
+        val channel = channelSpinner.selectedItem?.toString() ?: "Canary"
+        if (channel != "Canary") {
+            devices = emptyList()
+            deviceSpinner.adapter = ArrayAdapter(
+                this,
+                android.R.layout.simple_spinner_dropdown_item,
+                listOf("Stable fetch not implemented")
+            )
+            status.text = "Select Canary for the autopif4-compatible fetch path."
+            fetchButton.isEnabled = false
+            return
+        }
+
+        status.text = "Loading Pixel device lists…"
+        fetchButton.isEnabled = false
+
+        pool.execute {
+            try {
+                val (factoryHtml, otaHtml) = fetchBetaDeviceLists()
+                val chosen = if (factoryHtml.length >= otaHtml.length) factoryHtml else otaHtml
+                devices = parseDevices(chosen)
+
+                runOnUiThread {
+                    deviceSpinner.adapter = ArrayAdapter(
+                        this,
+                        android.R.layout.simple_spinner_dropdown_item,
+                        devices
+                    )
+                    status.text = "Found ${devices.size} devices"
+                    fetchButton.isEnabled = devices.isNotEmpty()
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    status.text = "Device fetch failed: ${e.message}"
+                    fetchButton.isEnabled = false
                 }
             }
         }
+    }
 
-        save.setOnClickListener {
-            openFileOutput("pixel-fetch.txt", MODE_PRIVATE).use {
-                it.write(resultText.toByteArray(Charsets.UTF_8))
+    private fun fetchSelectedBuild() {
+        val pos = deviceSpinner.selectedItemPosition
+        if (pos !in devices.indices) return
+
+        val chosen = devices[pos]
+        status.text = "Fetching Canary build for ${chosen.model}…"
+        fetchButton.isEnabled = false
+        results.removeAllViews()
+
+        pool.execute {
+            try {
+                val build = fetchCanary(chosen)
+                runOnUiThread {
+                    showBuild(build)
+                    status.text = "Build fetched successfully"
+                    fetchButton.isEnabled = true
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    status.text = "Build fetch failed: ${e.message}"
+                    fetchButton.isEnabled = true
+                }
             }
-            status.text = "Saved to app-private storage"
         }
     }
 
-    private fun fetchLatest(): BuildInfo {
+    // Upstream-derived discovery:
+    // Android Developers version page -> current Android page ->
+    // Factory Image + OTA pages -> use the longer device list.
+    private fun fetchBetaDeviceLists(): Pair<String, String> {
         val versions = http("https://developer.android.com/about/versions")
-        val latestPath = first(
-            Regex("""href="(/about/versions/[^"]*[0-9])""""),
-            versions
-        ) ?: first(
-            Regex("""href="(/about/versions/[0-9]{2})""""),
-            versions
-        ) ?: throw Exception("Could not find latest Android version page")
 
-        val latest = http("https://developer.android.com$latestPath")
+        val latestUrl = Regex(
+            """https://developer\.android\.com/about/versions/[^"' ]*[0-9]"""
+        ).findAll(versions)
+            .map { it.value }
+            .maxByOrNull { it.length }
+            ?: throw Exception("Could not locate Android version page")
 
-        val downloadLinks = Regex("""href="([^"]*download[^"]*)"""")
-            .findAll(latest).map { it.groupValues[1] }
-            .filter { !it.contains("download-ota") && !it.contains("ota") }
-            .toList()
+        val latest = http(latestUrl)
 
-        val otaLinks = Regex("""href="([^"]*download-ota[^"]*)"""")
-            .findAll(latest).map { it.groupValues[1] }.toList()
+        val factoryRel = Regex("""href="([^"]*download[^"]*)"""")
+            .findAll(latest)
+            .map { it.groupValues[1] }
+            .firstOrNull { it.contains("qpr", ignoreCase = true) }
+            ?: throw Exception("Factory Image page not found")
 
-        val fiUrl = downloadLinks.map { abs(it) }.firstOrNull()
-            ?: throw Exception("Could not find Pixel factory-image page")
-        val otaUrl = otaLinks.map { abs(it) }.firstOrNull()
+        val otaRel = Regex("""href="([^"]*download-ota[^"]*)"""")
+            .findAll(latest)
+            .map { it.groupValues[1] }
+            .firstOrNull { it.contains("qpr", ignoreCase = true) }
+            ?: throw Exception("OTA page not found")
 
-        val fiHtml = http(fiUrl)
-        val otaHtml = otaUrl?.let { http(it) } ?: ""
-
-        val fiProducts = products(fiHtml)
-        val otaProducts = products(otaHtml)
-
-        // Match the upstream selection rule: use OTA list when it is longer.
-        val src = if (otaProducts.size > fiProducts.size) otaHtml else fiHtml
-        val rows = deviceRows(src)
-        if (rows.isEmpty()) throw Exception("No Pixel device rows found")
-
-        val selected = rows.random()
-        val model = selected.first
-        val product = selected.second
-        val device = product.removeSuffix("_beta")
-
-        val flash = http("https://flash.android.com/")
-        val key = extractFlashKey(flash)
-            ?: throw Exception("Could not obtain the current Flash Tool client key")
-
-        val stationUrl =
-            "https://content-flashstation-pa.googleapis.com/v1/builds?product=${enc(product)}&key=${enc(key)}"
-        val station = http(stationUrl, "https://flash.android.com")
-
-        val canary = latestCanary(station)
-            ?: throw Exception("No Pixel Canary build was returned for $product")
-
-        val id = canary.optString("releaseCandidateName")
-        val incremental = canary.optString("buildId")
-        if (id.isBlank() || incremental.isBlank()) throw Exception("Canary build fields missing")
-
-        val android = canary.optString("releaseTrackVersionName", "Unknown")
-        val factory = canary.optString("factoryImageDownloadUrl")
-        val releaseDate = if (factory.isNotBlank()) lastModified(factory) else null
-        val expiryDate = releaseDate?.let { addDays(it, 42) } ?: "Unknown"
-
-        val canaryId = canary.optString("id")
-            .removePrefix("canary-")
-            .let { if (it.length >= 4) it.substring(0, 4) + "-" + it.substring(4) else it }
-
-        val secHtml = http("https://source.android.com/docs/security/bulletin/pixel")
-        val securityPatch = Regex("""<td>\Q$canaryId\E</td>\s*<td>([^<]+)</td>""")
-            .find(secHtml)?.groupValues?.get(1)?.trim()
-            ?: "$canaryId-05"
-
-        val fingerprint = "google/$product/$device:CANARY/$id/$incremental:user/release-keys"
-
-        return BuildInfo(model, product, device, android, id, incremental,
-            securityPatch, fingerprint, releaseDate ?: "Unknown", expiryDate)
+        val factory = http(resolveDeveloper(factoryRel))
+        val ota = http(resolveDeveloper(otaRel))
+        return factory to ota
     }
 
-    private fun latestCanary(json: String): JSONObject? {
-        val root = JSONObject(json)
-        val builds = root.optJSONArray("builds") ?: return null
-        for (i in builds.length() - 1 downTo 0) {
-            val b = builds.optJSONObject(i) ?: continue
-            if (b.optBoolean("canary", false)) return b
-        }
-        return null
-    }
+    private fun parseDevices(html: String): List<DeviceChoice> {
+        val list = mutableListOf<DeviceChoice>()
 
-    private fun deviceRows(html: String): List<Pair<String,String>> {
-        val result = mutableListOf<Pair<String,String>>()
         Regex("""<tr id="([^"]+)".*?</tr>""", RegexOption.DOT_MATCHES_ALL)
-            .findAll(html).forEach { m ->
-                val product = m.groupValues[1]
-                val cells = Regex("""<td>(.*?)</td>""", RegexOption.DOT_MATCHES_ALL)
-                    .findAll(m.value).map { strip(it.groupValues[1]) }.toList()
-                if (product.isNotBlank() && cells.isNotEmpty() && product.contains(Regex("""^[a-z0-9_]+$""")))
-                    result += cells.first() to "${product}_beta"
+            .findAll(html)
+            .forEach { match ->
+                val device = match.groupValues[1]
+                if (!device.matches(Regex("[a-z0-9_]+"))) return@forEach
+
+                val model = Regex("""<td>(.*?)</td>""", RegexOption.DOT_MATCHES_ALL)
+                    .find(match.value)
+                    ?.groupValues?.get(1)
+                    ?.replace(Regex("<[^>]+>"), "")
+                    ?.trim()
+
+                if (!model.isNullOrBlank()) {
+                    list += DeviceChoice(
+                        model = model,
+                        product = "${device}_beta",
+                        device = device
+                    )
+                }
             }
-        return result.distinct()
+
+        return list.distinctBy { it.product }
     }
 
-    private fun products(html: String): List<String> =
-        Regex("""<tr id="([^"]+)"""").findAll(html).map { it.groupValues[1] }.toList()
+    // Upstream-derived Flash Tool -> Flashstation lookup.
+    private fun fetchCanary(choice: DeviceChoice): BuildChoice {
+        val flashHtml = http("https://flash.android.com/")
+        val key = extractFlashKey(flashHtml)
+            ?: throw Exception("Could not obtain Flash Tool key")
+
+        val endpoint =
+            "https://content-flashstation-pa.googleapis.com/v1/builds" +
+                "?product=${enc(choice.product)}&key=${enc(key)}"
+
+        val root = JSONObject(http(endpoint, "https://flash.android.com"))
+        val builds = root.optJSONArray("builds")
+            ?: throw Exception("No builds returned for ${choice.product}")
+
+        var canary: JSONObject? = null
+        for (i in builds.length() - 1 downTo 0) {
+            val item = builds.optJSONObject(i) ?: continue
+            if (item.optBoolean("canary", false)) {
+                canary = item
+                break
+            }
+        }
+
+        val item = canary ?: throw Exception(
+            "No Pixel Canary build was returned for ${choice.product}"
+        )
+
+        val id = item.optString("releaseCandidateName")
+        val incremental = item.optString("buildId")
+        if (id.isBlank() || incremental.isBlank()) {
+            throw Exception("Incomplete Canary build metadata")
+        }
+
+        val android = item.optString("releaseTrackVersionName", "Unknown")
+        val factoryUrl = item.optString("factoryImageDownloadUrl")
+        val buildDate = if (factoryUrl.isNotBlank()) lastModified(factoryUrl) else "Unknown"
+
+        val canaryId = item.optString("id")
+            .removePrefix("canary-")
+            .let { if (it.length > 4) it.substring(0, 4) + "-" + it.substring(4) else it }
+
+        val securityPatch = fetchSecurityPatch(canaryId)
+
+        val fingerprint =
+            "google/${choice.product}/${choice.device}:CANARY/$id/$incremental:user/release-keys"
+
+        return BuildChoice(
+            model = choice.model,
+            product = choice.product,
+            device = choice.device,
+            id = id,
+            incremental = incremental,
+            android = android,
+            release = "CANARY",
+            securityPatch = securityPatch,
+            buildDate = buildDate,
+            fingerprint = fingerprint
+        )
+    }
+
+    private fun fetchSecurityPatch(canaryId: String): String {
+        val bulletin = http("https://source.android.com/docs/security/bulletin/pixel")
+        val match = Regex(
+            """<td>\Q$canaryId\E</td>\s*<td>([^<]+)</td>""",
+            RegexOption.DOT_MATCHES_ALL
+        ).find(bulletin)
+        return match?.groupValues?.get(1)?.trim()
+            ?: if (canaryId.matches(Regex("""\d{4}-\d{2}-\d{2}"""))) canaryId else "Unknown"
+    }
 
     private fun extractFlashKey(html: String): String? {
-        val m = Regex("""<body\s+data-client-config=.*""").find(html)?.value ?: return null
-        return m.substringAfter(';', "").substringBefore('&', "").trim('"', '\'', '>', ' ')
+        val body = Regex("""<body\s+data-client-config=.*""")
+            .find(html)?.value ?: return null
+        return body.substringAfter(';')
+            .substringBefore('&')
+            .trim('"', '\'', '>', ' ')
             .takeIf { it.isNotBlank() }
     }
 
-    private fun lastModified(url: String): String? {
-        val c = open(url)
-        c.requestMethod = "HEAD"
-        c.connect()
-        val v = c.getHeaderField("Last-Modified") ?: return null
-        return v
+    private fun showBuild(build: BuildChoice) {
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(18, 18, 18, 18)
+        }
+
+        fun label(text: String, size: Float = 14f, bold: Boolean = false): TextView =
+            TextView(this).apply {
+                this.text = text
+                textSize = size
+                if (bold) setTypeface(null, android.graphics.Typeface.BOLD)
+                setPadding(0, 3, 0, 3)
+            }
+
+        card.addView(label(build.model, 18f, true))
+        card.addView(label("Device: ${build.device}"))
+        card.addView(label("Product: ${build.product}"))
+        card.addView(label("Build: ${build.id}"))
+        card.addView(label("Build date: ${build.buildDate}"))
+        card.addView(label("Android: ${build.android}"))
+        card.addView(label("Security patch: ${build.securityPatch}"))
+
+        val download = Button(this).apply {
+            text = "DOWNLOAD JSON"
+            setOnClickListener { saveJson(build) }
+        }
+        card.addView(download)
+
+        results.addView(
+            card,
+            ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        )
     }
 
-    private fun addDays(date: String, days: Int): String = "Calculated from $date (+$days days)"
+    private fun saveJson(build: BuildChoice) {
+        val json = JSONObject().apply {
+            put("TYPE", "user")
+            put("TAGS", "release-keys")
+            put("ID", build.id)
+            put("BRAND", "google")
+            put("DEVICE", build.device)
+            put("FINGERPRINT", build.fingerprint)
+            put("MANUFACTURER", "Google")
+            put("MODEL", build.model)
+            put("PRODUCT", build.product)
+            put("RELEASE", build.release)
+            put("SECURITY_PATCH", build.securityPatch)
+            put("DEVICE_INITIAL_SDK_INT", 32)
+            put("DEBUG", false)
+            put("SDK_INT", 32)
+        }
+
+        val safeModel = build.model.replace(Regex("[^A-Za-z0-9]+"), "_")
+        val fileName = "${safeModel}_${build.id}.json"
+
+        val values = ContentValues().apply {
+            put(MediaStore.Downloads.DISPLAY_NAME, fileName)
+            put(MediaStore.Downloads.MIME_TYPE, "application/json")
+            put(MediaStore.Downloads.RELATIVE_PATH, "Download/PixelFetch")
+        }
+
+        val uri = contentResolver.insert(
+            MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+            values
+        ) ?: throw IllegalStateException("Could not create download")
+
+        contentResolver.openOutputStream(uri)?.use {
+            it.write(json.toString(2).toByteArray(Charsets.UTF_8))
+        }
+
+        Toast.makeText(
+            this,
+            "Saved to Download/PixelFetch/$fileName",
+            Toast.LENGTH_LONG
+        ).show()
+    }
 
     private fun http(url: String, referer: String? = null): String {
-        val c = open(url)
-        referer?.let { c.setRequestProperty("Referer", it) }
+        val c = URL(url).openConnection() as HttpURLConnection
+        c.requestMethod = "GET"
+        c.connectTimeout = 20000
+        c.readTimeout = 30000
+        c.setRequestProperty("User-Agent", "PixelFetch/1.0")
+        if (referer != null) c.setRequestProperty("Referer", referer)
+
+        val code = c.responseCode
+        if (code !in 200..299) throw Exception("HTTP $code")
         return c.inputStream.bufferedReader().use { it.readText() }
     }
 
-    private fun open(url: String): HttpURLConnection {
+    private fun lastModified(url: String): String {
         val c = URL(url).openConnection() as HttpURLConnection
-        c.requestMethod = "GET"
+        c.requestMethod = "HEAD"
         c.connectTimeout = 15000
-        c.readTimeout = 25000
-        c.setRequestProperty("User-Agent", "PixelFetch/1.0 (Android)")
-        c.setRequestProperty("Accept", "text/html,application/json")
-        c.instanceFollowRedirects = true
-        return c
+        c.readTimeout = 15000
+        c.connect()
+
+        val raw = c.getHeaderField("Last-Modified") ?: return "Unknown"
+        return try {
+            val src = SimpleDateFormat(
+                "EEE, dd MMM yyyy HH:mm:ss z",
+                Locale.US
+            )
+            val out = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+            out.format(src.parse(raw)!!)
+        } catch (_: Exception) {
+            "Unknown"
+        }
     }
 
-    private fun abs(path: String) =
-        if (path.startsWith("http")) path else "https://developer.android.com" + path
+    private fun resolveDeveloper(path: String): String =
+        if (path.startsWith("http")) path else "https://developer.android.com$path"
 
-    private fun enc(s: String) = java.net.URLEncoder.encode(s, "UTF-8")
+    private fun enc(value: String): String =
+        URLEncoder.encode(value, "UTF-8")
 
-    private fun first(r: Regex, s: String) = r.find(s)?.groupValues?.get(1)
-
-    private fun strip(s: String) = s.replace(Regex("<[^>]+>"), "").trim()
-
-    private fun render(b: BuildInfo) = """
-        Pixel Canary Build
-        ==========================
-        Model:            ${b.model}
-        Product:          ${b.product}
-        Device:           ${b.device}
-        Android:          ${b.android}
-        Build ID:         ${b.id}
-        Incremental:      ${b.incremental}
-        Security Patch:   ${b.securityPatch}
-        Canary Released:  ${b.releaseDate}
-        Estimated Expiry: ${b.expiryDate}
-
-        Fingerprint:
-        ${b.fingerprint}
-
-        Source:
-        Android Developers
-        Google Flash Tool / Flashstation
-        Pixel Update Bulletins
-    """.trimIndent()
+    override fun onDestroy() {
+        pool.shutdownNow()
+        super.onDestroy()
+    }
 }
