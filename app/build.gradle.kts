@@ -13,7 +13,7 @@ android {
     }
 
     kotlinOptions {
-        jvmTarget = "17"
+        jvmTarget = "1.8"
     }
 
     defaultConfig {
@@ -25,10 +25,7 @@ android {
     }
 }
 
-kotlin {
-    jvmToolchain(17)
-}
 
 tasks.withType<JavaCompile>().configureEach {
-    options.release.set(17)
+    options.release.set(8)
 }
